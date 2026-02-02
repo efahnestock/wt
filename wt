@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Find the main repo (where .git is a directory, not a file)
+find_main_repo() {
+    local dir="$PWD"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -d "$dir/.git" ]]; then
+            echo "$dir"
+            return 0
+        elif [[ -f "$dir/.git" ]]; then
+            # This is a worktree, follow the gitdir to find main repo
+            # gitdir format: gitdir: /path/to/main/.git/worktrees/branch-name
+            local gitdir=$(cat "$dir/.git" | sed 's/gitdir: //')
+            # Strip /worktrees/xxx to get main .git dir, then get parent
+            local main_git="${gitdir%/worktrees/*}"
+            dirname "$main_git"
+            return 0
+        fi
+        dir=$(dirname "$dir")
+    done
+    echo "Not in a git repository" >&2
+    return 1
+}
+
+MAIN_REPO=$(find_main_repo)
+REPO_NAME=$(basename "$MAIN_REPO")
+CLAUDE_PROJECTS_DIR="$HOME/.claude/projects"
+
+# Convert path to Claude project directory name (replaces / with -)
+path_to_claude_project() {
+    echo "$1" | sed 's|^/|-|; s|/|-|g'
+}
+
+# Check if worktree has uncommitted changes
+has_uncommitted_changes() {
+    local wt_path="$1"
+    ! git -C "$wt_path" diff --quiet HEAD 2>/dev/null || \
+    ! git -C "$wt_path" diff --cached --quiet HEAD 2>/dev/null || \
+    [[ -n "$(git -C "$wt_path" ls-files --others --exclude-standard)" ]]
+}
+
+# Check if worktree has unpushed commits
+has_unpushed_commits() {
+    local wt_path="$1"
+    local branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD)
+    local upstream=$(git -C "$wt_path" rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "")
+
+    if [[ -z "$upstream" ]]; then
+        # No upstream set - check if branch exists on origin
+        if git -C "$wt_path" show-ref --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null; then
+            # Remote branch exists, compare
+            [[ -n "$(git -C "$wt_path" log "origin/$branch..HEAD" --oneline 2>/dev/null)" ]]
+        else
+            # No remote branch - consider unpushed if there are commits
+            return 0
+        fi
+    else
+        [[ -n "$(git -C "$wt_path" log "$upstream..HEAD" --oneline 2>/dev/null)" ]]
+    fi
+}
+
+# Remove a single worktree with safety checks
+remove_worktree() {
+    local branch="$1"
+    local worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-${branch}"
+
+    if [[ ! -d "$worktree_path" ]]; then
+        echo "Worktree not found: $worktree_path" >&2
+        return 1
+    fi
+
+    # Safety checks
+    if has_uncommitted_changes "$worktree_path"; then
+        echo "ERROR: Worktree '$branch' has uncommitted changes" >&2
+        echo "  Commit or stash changes before removing" >&2
+        return 1
+    fi
+
+    if has_unpushed_commits "$worktree_path"; then
+        echo "ERROR: Worktree '$branch' has unpushed commits" >&2
+        echo "  Push changes before removing" >&2
+        return 1
+    fi
+
+    # Remove symlinks first (git worktree remove doesn't like symlinks)
+    rm -f "$worktree_path/.claude"
+
+    # Remove Claude projects symlink
+    wt_project=$(path_to_claude_project "$worktree_path")
+    if [[ -L "$CLAUDE_PROJECTS_DIR/$wt_project" ]]; then
+        rm -f "$CLAUDE_PROJECTS_DIR/$wt_project"
+    fi
+
+    git -C "$MAIN_REPO" worktree remove "$worktree_path"
+    echo "Removed worktree: $worktree_path"
+    echo "Branch '$branch' preserved"
+}
+
+case "${1:-}" in
+    new)
+        branch="${2:?Usage: wt new <branch-name> [base-ref]}"
+        base="${3:-main}"
+        worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-${branch}"
+
+        # Check if branch already exists
+        if git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$branch"; then
+            echo "Branch '$branch' exists, creating worktree for it..."
+            git -C "$MAIN_REPO" worktree add "$worktree_path" "$branch"
+        else
+            echo "Creating new branch '$branch' from '$base'..."
+            git -C "$MAIN_REPO" worktree add -b "$branch" "$worktree_path" "$base"
+        fi
+
+        # Symlink .claude directory for settings
+        if [[ -d "$MAIN_REPO/.claude" ]]; then
+            ln -s "$MAIN_REPO/.claude" "$worktree_path/.claude"
+            echo "Linked .claude/ to main repo"
+        fi
+
+        # Symlink Claude projects directory so conversations are shared
+        main_project=$(path_to_claude_project "$MAIN_REPO")
+        wt_project=$(path_to_claude_project "$worktree_path")
+        if [[ -d "$CLAUDE_PROJECTS_DIR/$main_project" ]] && [[ ! -e "$CLAUDE_PROJECTS_DIR/$wt_project" ]]; then
+            ln -s "$main_project" "$CLAUDE_PROJECTS_DIR/$wt_project"
+            echo "Linked Claude conversations to main repo"
+        fi
+
+        # Run setup.sh if it exists
+        if [[ -x "$worktree_path/setup.sh" ]]; then
+            echo "Running setup.sh..."
+            (cd "$worktree_path" && ./setup.sh)
+        fi
+
+        echo ""
+        echo "Created worktree: $worktree_path"
+        echo "  cd $worktree_path"
+        ;;
+
+    list)
+        while IFS= read -r line; do
+            wt_path=$(echo "$line" | awk '{print $1}')
+            branch=$(echo "$line" | awk '{print $3}' | tr -d '[]')
+
+            # Determine status
+            status=""
+            if [[ -d "$wt_path" ]]; then
+                if has_uncommitted_changes "$wt_path" 2>/dev/null; then
+                    status="*"
+                fi
+                if has_unpushed_commits "$wt_path" 2>/dev/null; then
+                    status="${status}↑"
+                fi
+                if [[ -z "$status" ]]; then
+                    status="✓"
+                fi
+            fi
+
+            printf "%-50s %s %s\n" "$wt_path" "[$branch]" "$status"
+        done < <(git -C "$MAIN_REPO" worktree list)
+        ;;
+
+    # List branch names only (for completion)
+    __branches)
+        git -C "$MAIN_REPO" worktree list | awk '{print $3}' | tr -d '[]' | grep -v "^$"
+        ;;
+
+    done|rm|remove)
+        if [[ "${2:-}" == "--all" ]]; then
+            echo "Removing all worktrees..."
+            failed=0
+            success=0
+
+            # Get all worktrees except the main one
+            while IFS= read -r line; do
+                wt_path=$(echo "$line" | awk '{print $1}')
+
+                # Skip main repo
+                [[ "$wt_path" == "$MAIN_REPO" ]] && continue
+
+                # Extract branch name from path
+                branch=$(basename "$wt_path" | sed "s/^${REPO_NAME}-//")
+
+                echo ""
+                echo "--- $branch ---"
+                if remove_worktree "$branch"; then
+                    ((success++))
+                else
+                    ((failed++))
+                    echo "Skipping $branch"
+                fi
+            done < <(git -C "$MAIN_REPO" worktree list)
+
+            echo ""
+            echo "Summary: $success removed, $failed skipped"
+        else
+            branch="${2:?Usage: wt done <branch-name> | wt done --all}"
+            remove_worktree "$branch"
+        fi
+        ;;
+
+    cd|path)
+        branch="${2:?Usage: wt cd <branch-name>}"
+        echo "$(dirname "$MAIN_REPO")/${REPO_NAME}-${branch}"
+        ;;
+
+    *)
+        echo "Usage: wt <command> [args]"
+        echo ""
+        echo "Commands:"
+        echo "  new <branch> [base]  Create worktree (uses existing branch if present)"
+        echo "  list                 List all worktrees"
+        echo "  done <branch>        Remove worktree (fails if uncommitted/unpushed)"
+        echo "  done --all           Remove all worktrees (skips unsafe ones)"
+        echo "  cd <branch>          Change to worktree directory"
+        ;;
+esac
