@@ -32,6 +32,11 @@ path_to_claude_project() {
     echo "$1" | sed 's|^/|-|; s|/|-|g'
 }
 
+# Sanitize branch name for use in directory paths (replaces / with -)
+sanitize_branch() {
+    echo "$1" | sed 's|/|-|g'
+}
+
 # Check if worktree has uncommitted changes
 has_uncommitted_changes() {
     local wt_path="$1"
@@ -64,7 +69,7 @@ has_unpushed_commits() {
 # Returns the worktree path on success (for shell wrapper to detect)
 remove_worktree() {
     local branch="$1"
-    local worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-${branch}"
+    local worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
 
     if [[ ! -d "$worktree_path" ]]; then
         echo "Worktree not found: $worktree_path" >&2
@@ -130,7 +135,7 @@ case "${1:-}" in
             exit 1
         fi
 
-        worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-${branch}"
+        worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
 
         # Check if branch already exists
         if git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$branch"; then
@@ -234,7 +239,18 @@ case "${1:-}" in
             # Signal main repo for cd
             echo "__WT_MAIN__:$MAIN_REPO"
         else
-            branch="${2:?Usage: wt done <branch-name> | wt done --all}"
+            branch="${2:-}"
+            if [[ -z "$branch" ]]; then
+                # No branch specified - try to use current worktree
+                if [[ -f "$PWD/.git" ]]; then
+                    # We're in a worktree, get current branch
+                    branch=$(git rev-parse --abbrev-ref HEAD)
+                else
+                    echo "Usage: wt done [branch-name] | wt done --all" >&2
+                    echo "  (run without args from within a worktree)" >&2
+                    exit 1
+                fi
+            fi
             remove_worktree "$branch"
             # Signal main repo for cd
             echo "__WT_MAIN__:$MAIN_REPO"
@@ -243,7 +259,7 @@ case "${1:-}" in
 
     cd|path)
         branch="${2:?Usage: wt cd <branch-name>}"
-        echo "$(dirname "$MAIN_REPO")/${REPO_NAME}-${branch}"
+        echo "$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
         ;;
 
     *)
@@ -252,7 +268,7 @@ case "${1:-}" in
         echo "Commands:"
         echo "  new <branch> [base] [--no-cd]  Create worktree and cd into it"
         echo "  ls                             List all worktrees with status"
-        echo "  done <branch>                  Remove worktree (fails if uncommitted/unpushed)"
+        echo "  done [branch]                  Remove worktree (default: current worktree)"
         echo "  done --all                     Remove all worktrees (skips unsafe ones)"
         echo "  cd <branch>                    Change to worktree directory"
         ;;
