@@ -67,8 +67,45 @@ wt done --all
 ### Claude Code Integration
 
 When creating worktrees, `wt` automatically:
-- Symlinks `.claude/` to the main repo (shares settings like `CLAUDE.md`)
-- Symlinks `~/.claude/projects/<worktree>` to the main repo's project dir (shares conversation history)
+- **Shared settings**: Symlinks `.claude/` to the main repo so `CLAUDE.md` and other settings are available in all worktrees
+- **Shared conversations**: Symlinks `~/.claude/projects/<worktree>` to the main repo's project directory so conversation history is shared across all worktrees
+
+When removing worktrees with `wt done`, these symlinks are cleaned up automatically.
+
+#### Setup
+
+Add `.claude` to your `.gitignore` (project or global):
+
+```bash
+# Project .gitignore
+echo ".claude" >> .gitignore
+
+# Or global gitignore
+echo ".claude" >> ~/.gitignore
+git config --global core.excludesfile ~/.gitignore
+```
+
+#### Suggested CLAUDE.md Addition
+
+Add this to your project's `CLAUDE.md` or `~/.claude/CLAUDE.md` to inform Claude about worktree usage:
+
+```markdown
+## Worktree Management
+
+This user uses git worktrees for feature development. A `wt` tool manages them:
+
+- `wt new <branch> [base]` - Create worktree at `../repo-branch/`
+- `wt list` - Show all worktrees with status (✓=clean, *=uncommitted, ↑=unpushed)
+- `wt done <branch>` - Remove worktree (fails if uncommitted/unpushed changes)
+- `wt done --all` - Remove all safe worktrees
+- `wt cd <branch>` - Change directory to worktree (with tab completion)
+
+Worktrees share settings and conversation history with the main repo via symlinks:
+- `.claude/` → main repo's `.claude/` (for settings)
+- `~/.claude/projects/<worktree-path>` → main repo's project dir (for conversations)
+
+When suggesting the user work on a new feature, recommend using `wt new feature-name` to create an isolated worktree.
+```
 
 ### Optional setup.sh
 
