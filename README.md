@@ -19,19 +19,22 @@ cd wt
 ## Usage
 
 ```bash
-# Create a new worktree with a new branch
+# Create a new worktree and cd into it
 wt new feature-auth
-# Creates ../myrepo-feature-auth/ with branch feature-auth
+# Creates ../myrepo-feature-auth/ and changes to that directory
 
 # Create from a specific base
 wt new hotfix-bug main
+
+# Create without changing directory
+wt new feature-auth --no-cd
 
 # Use an existing branch
 wt new existing-branch
 # Creates worktree for the existing branch
 
 # List all worktrees with status
-wt list
+wt ls
 # /home/user/code/myrepo              [main]           ✓
 # /home/user/code/myrepo-feature-auth [feature-auth]   *↑
 
@@ -42,6 +45,11 @@ wt cd feature-auth
 wt done feature-auth
 # ERROR: Worktree 'feature-auth' has uncommitted changes
 #   Commit or stash changes before removing
+
+# Remove worktree you're currently in (auto-returns to main repo)
+wt done feature-auth
+# Removed worktree: /home/user/code/myrepo-feature-auth
+# Returning to main repo...
 
 # Remove all safe worktrees
 wt done --all
@@ -56,6 +64,11 @@ wt done --all
 | ↑ | Unpushed commits |
 
 ## Features
+
+### Automatic Directory Navigation
+
+- `wt new` automatically changes to the new worktree (use `--no-cd` to disable)
+- `wt done` returns to the main repo if you're inside the removed worktree
 
 ### Safety Checks
 
@@ -94,8 +107,8 @@ Add this to your project's `CLAUDE.md` or `~/.claude/CLAUDE.md` to inform Claude
 
 This user uses git worktrees for feature development. A `wt` tool manages them:
 
-- `wt new <branch> [base]` - Create worktree at `../repo-branch/`
-- `wt list` - Show all worktrees with status (✓=clean, *=uncommitted, ↑=unpushed)
+- `wt new <branch> [base]` - Create worktree at `../repo-branch/` and cd into it
+- `wt ls` - Show all worktrees with status (✓=clean, *=uncommitted, ↑=unpushed)
 - `wt done <branch>` - Remove worktree (fails if uncommitted/unpushed changes)
 - `wt done --all` - Remove all safe worktrees
 - `wt cd <branch>` - Change directory to worktree (with tab completion)
@@ -142,7 +155,7 @@ Worktrees are created as siblings to the main repo:
 
 ## Shell Integration
 
-The installer adds a shell function to handle `wt cd` (which needs to change your shell's directory). Tab completion is included for both Bash and Zsh.
+The installer adds a shell function to handle directory changes (which can't be done from scripts). Tab completion is included for both Bash and Zsh.
 
 ## License
 

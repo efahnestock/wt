@@ -61,6 +61,7 @@ has_unpushed_commits() {
 }
 
 # Remove a single worktree with safety checks
+# Returns the worktree path on success (for shell wrapper to detect)
 remove_worktree() {
     local branch="$1"
     local worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-${branch}"
@@ -95,12 +96,40 @@ remove_worktree() {
     git -C "$MAIN_REPO" worktree remove "$worktree_path"
     echo "Removed worktree: $worktree_path"
     echo "Branch '$branch' preserved"
+    # Signal to shell wrapper which worktree was removed
+    echo "__WT_REMOVED__:$worktree_path"
 }
 
 case "${1:-}" in
     new)
-        branch="${2:?Usage: wt new <branch-name> [base-ref]}"
-        base="${3:-main}"
+        shift
+        no_cd=false
+        branch=""
+        base="main"
+
+        # Parse arguments
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --no-cd)
+                    no_cd=true
+                    shift
+                    ;;
+                *)
+                    if [[ -z "$branch" ]]; then
+                        branch="$1"
+                    else
+                        base="$1"
+                    fi
+                    shift
+                    ;;
+            esac
+        done
+
+        if [[ -z "$branch" ]]; then
+            echo "Usage: wt new <branch-name> [base-ref] [--no-cd]" >&2
+            exit 1
+        fi
+
         worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-${branch}"
 
         # Check if branch already exists
@@ -122,7 +151,7 @@ case "${1:-}" in
         main_project=$(path_to_claude_project "$MAIN_REPO")
         wt_project=$(path_to_claude_project "$worktree_path")
         if [[ -d "$CLAUDE_PROJECTS_DIR/$main_project" ]] && [[ ! -e "$CLAUDE_PROJECTS_DIR/$wt_project" ]]; then
-            ln -s "$main_project" "$CLAUDE_PROJECTS_DIR/$wt_project"
+            ln -s -- "$main_project" "$CLAUDE_PROJECTS_DIR/$wt_project"
             echo "Linked Claude conversations to main repo"
         fi
 
@@ -134,10 +163,14 @@ case "${1:-}" in
 
         echo ""
         echo "Created worktree: $worktree_path"
-        echo "  cd $worktree_path"
+
+        # Signal to shell wrapper to cd (unless --no-cd)
+        if [[ "$no_cd" == "false" ]]; then
+            echo "__WT_CD__:$worktree_path"
+        fi
         ;;
 
-    list)
+    ls|list)
         while IFS= read -r line; do
             wt_path=$(echo "$line" | awk '{print $1}')
             branch=$(echo "$line" | awk '{print $3}' | tr -d '[]')
@@ -163,6 +196,11 @@ case "${1:-}" in
     # List branch names only (for completion)
     __branches)
         git -C "$MAIN_REPO" worktree list | awk '{print $3}' | tr -d '[]' | grep -v "^$"
+        ;;
+
+    # Return main repo path (for shell wrapper)
+    __main)
+        echo "$MAIN_REPO"
         ;;
 
     done|rm|remove)
@@ -193,9 +231,13 @@ case "${1:-}" in
 
             echo ""
             echo "Summary: $success removed, $failed skipped"
+            # Signal main repo for cd
+            echo "__WT_MAIN__:$MAIN_REPO"
         else
             branch="${2:?Usage: wt done <branch-name> | wt done --all}"
             remove_worktree "$branch"
+            # Signal main repo for cd
+            echo "__WT_MAIN__:$MAIN_REPO"
         fi
         ;;
 
@@ -208,10 +250,10 @@ case "${1:-}" in
         echo "Usage: wt <command> [args]"
         echo ""
         echo "Commands:"
-        echo "  new <branch> [base]  Create worktree (uses existing branch if present)"
-        echo "  list                 List all worktrees"
-        echo "  done <branch>        Remove worktree (fails if uncommitted/unpushed)"
-        echo "  done --all           Remove all worktrees (skips unsafe ones)"
-        echo "  cd <branch>          Change to worktree directory"
+        echo "  new <branch> [base] [--no-cd]  Create worktree and cd into it"
+        echo "  ls                             List all worktrees with status"
+        echo "  done <branch>                  Remove worktree (fails if uncommitted/unpushed)"
+        echo "  done --all                     Remove all worktrees (skips unsafe ones)"
+        echo "  cd <branch>                    Change to worktree directory"
         ;;
 esac
