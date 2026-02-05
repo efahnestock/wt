@@ -105,6 +105,55 @@ remove_worktree() {
     echo "__WT_REMOVED__:$worktree_path"
 }
 
+# Force-remove a single worktree (warns and prompts for confirmation)
+# All user-facing output goes to /dev/tty since the shell wrapper captures stdout+stderr
+force_remove_worktree() {
+    local branch="$1"
+    local worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
+
+    if [[ ! -d "$worktree_path" ]]; then
+        echo "Worktree not found: $worktree_path" >/dev/tty
+        return 1
+    fi
+
+    # Show warnings
+    local warnings=""
+    if has_uncommitted_changes "$worktree_path"; then
+        warnings="uncommitted changes"
+    fi
+    if has_unpushed_commits "$worktree_path"; then
+        [[ -n "$warnings" ]] && warnings="$warnings, "
+        warnings="${warnings}unpushed commits"
+    fi
+
+    if [[ -n "$warnings" ]]; then
+        echo "WARNING: Worktree '$branch' has $warnings" >/dev/tty
+    fi
+
+    # Prompt for confirmation (read from /dev/tty for --all mode where stdin is consumed)
+    local confirm
+    echo -n "Remove worktree '$branch'? [y/N] " >/dev/tty
+    read -r confirm </dev/tty
+    if [[ "$confirm" != [yY] ]]; then
+        echo "Skipped $branch" >/dev/tty
+        return 1
+    fi
+
+    # Remove symlinks first (git worktree remove doesn't like symlinks)
+    rm -f "$worktree_path/.claude"
+
+    # Remove Claude projects symlink
+    wt_project=$(path_to_claude_project "$worktree_path")
+    if [[ -L "$CLAUDE_PROJECTS_DIR/$wt_project" ]]; then
+        rm -f "$CLAUDE_PROJECTS_DIR/$wt_project"
+    fi
+
+    git -C "$MAIN_REPO" worktree remove --force "$worktree_path"
+    echo "Removed worktree: $worktree_path"
+    echo "Branch '$branch' preserved"
+    echo "__WT_REMOVED__:$worktree_path"
+}
+
 case "${1:-}" in
     new)
         shift
@@ -209,7 +258,20 @@ case "${1:-}" in
         ;;
 
     done|rm|remove)
-        if [[ "${2:-}" == "--all" ]]; then
+        shift
+        force=false
+        all=false
+        branch=""
+
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --force|-f) force=true; shift ;;
+                --all)      all=true; shift ;;
+                *)          branch="$1"; shift ;;
+            esac
+        done
+
+        if [[ "$all" == "true" ]]; then
             echo "Removing all worktrees..."
             failed=0
             success=0
@@ -226,11 +288,19 @@ case "${1:-}" in
 
                 echo ""
                 echo "--- $branch ---"
-                if remove_worktree "$branch"; then
-                    ((success++))
+                if [[ "$force" == "true" ]]; then
+                    if force_remove_worktree "$branch"; then
+                        ((success++))
+                    else
+                        ((failed++))
+                    fi
                 else
-                    ((failed++))
-                    echo "Skipping $branch"
+                    if remove_worktree "$branch"; then
+                        ((success++))
+                    else
+                        ((failed++))
+                        echo "Skipping $branch"
+                    fi
                 fi
             done < <(git -C "$MAIN_REPO" worktree list)
 
@@ -239,19 +309,22 @@ case "${1:-}" in
             # Signal main repo for cd
             echo "__WT_MAIN__:$MAIN_REPO"
         else
-            branch="${2:-}"
             if [[ -z "$branch" ]]; then
                 # No branch specified - try to use current worktree
                 if [[ -f "$PWD/.git" ]]; then
                     # We're in a worktree, get current branch
                     branch=$(git rev-parse --abbrev-ref HEAD)
                 else
-                    echo "Usage: wt done [branch-name] | wt done --all" >&2
+                    echo "Usage: wt done [branch-name] [--force] | wt done --all [--force]" >&2
                     echo "  (run without args from within a worktree)" >&2
                     exit 1
                 fi
             fi
-            remove_worktree "$branch"
+            if [[ "$force" == "true" ]]; then
+                force_remove_worktree "$branch"
+            else
+                remove_worktree "$branch"
+            fi
             # Signal main repo for cd
             echo "__WT_MAIN__:$MAIN_REPO"
         fi
@@ -268,8 +341,8 @@ case "${1:-}" in
         echo "Commands:"
         echo "  new <branch> [base] [--no-cd]  Create worktree and cd into it"
         echo "  ls                             List all worktrees with status"
-        echo "  done [branch]                  Remove worktree (default: current worktree)"
-        echo "  done --all                     Remove all worktrees (skips unsafe ones)"
+        echo "  done [branch] [--force]        Remove worktree (default: current worktree)"
+        echo "  done --all [--force]           Remove all worktrees (skips unsafe ones)"
         echo "  cd <branch>                    Change to worktree directory"
         ;;
 esac
