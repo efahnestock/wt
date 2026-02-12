@@ -209,6 +209,12 @@ case "${1:-}" in
             echo "Linked Claude conversations to main repo"
         fi
 
+        # Copy .env from current repo if it exists
+        if [[ -f "$PWD/.env" ]]; then
+            cp "$PWD/.env" "$worktree_path/.env"
+            echo "Copied .env to new worktree"
+        fi
+
         # Run setup.sh if it exists
         if [[ -x "$worktree_path/setup.sh" ]]; then
             echo "Running setup.sh..."
