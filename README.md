@@ -19,7 +19,7 @@ cd wt
 ## Usage
 
 ```bash
-# Create a new worktree and cd into it
+# Create a new worktree from the current branch and cd into it
 wt new feature-auth
 # Creates ../myrepo-feature-auth/ and changes to that directory
 
@@ -40,6 +40,9 @@ wt ls
 
 # Change to a worktree directory
 wt cd feature-auth
+
+# Return to main repo
+wt cd
 
 # Remove a worktree (with safety checks)
 wt done feature-auth
@@ -69,6 +72,17 @@ wt done --all
 
 - `wt new` automatically changes to the new worktree (use `--no-cd` to disable)
 - `wt done` returns to the main repo if you're inside the removed worktree
+
+### Branching From the Current Worktree
+
+Without an explicit base ref, `wt new` creates the new branch from the `HEAD` of
+the worktree where you run it. This makes it possible to branch from another
+feature worktree directly. Pass a base ref as the second argument to override it:
+
+```bash
+wt new follow-up-feature       # starts from the current worktree's branch
+wt new independent-feature main
+```
 
 ### Safety Checks
 
@@ -111,7 +125,7 @@ This user uses git worktrees for feature development. A `wt` tool manages them:
 - `wt ls` - Show all worktrees with status (✓=clean, *=uncommitted, ↑=unpushed)
 - `wt done <branch>` - Remove worktree (fails if uncommitted/unpushed changes)
 - `wt done --all` - Remove all safe worktrees
-- `wt cd <branch>` - Change directory to worktree (with tab completion)
+- `wt cd [branch]` - Change to worktree, or main repo with no args
 
 Worktrees share settings and conversation history with the main repo via symlinks:
 - `.claude/` → main repo's `.claude/` (for settings)

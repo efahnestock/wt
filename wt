@@ -1,6 +1,67 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+print_help() {
+    case "${1:-}" in
+        new)
+            echo "Usage: wt new <branch-name> [base-ref] [--no-cd]"
+            echo ""
+            echo "Create a worktree for a new or existing branch."
+            echo "New branches start from the current worktree unless base-ref is provided."
+            echo ""
+            echo "Options:"
+            echo "  --no-cd                       Do not cd into the worktree"
+            ;;
+        ls|list)
+            echo "Usage: wt ls"
+            echo ""
+            echo "List all worktrees and their status."
+            ;;
+        done|rm|remove)
+            echo "Usage: wt done [branch] [--force]"
+            echo "       wt done --all [--force]"
+            echo ""
+            echo "Remove a worktree, refusing unsafe removals unless --force is used."
+            ;;
+        cd|path)
+            echo "Usage: wt cd [name]"
+            echo ""
+            echo "Change to a worktree, or to the main checkout when no name is given."
+            ;;
+        *)
+            echo "Usage: wt <command> [args]"
+            echo ""
+            echo "Commands:"
+            echo "  new <branch> [base] [--no-cd]  Create worktree from the current branch and cd into it"
+            echo "  ls                             List all worktrees with status"
+            echo "  done [branch] [--force]        Remove worktree (default: current worktree)"
+            echo "  done --all [--force]           Remove all worktrees (skips unsafe ones)"
+            echo "  cd [name]                      Change to worktree (or main repo if no arg)"
+            echo ""
+            echo "Run 'wt <command> -h' for command-specific help."
+            ;;
+    esac
+}
+
+# Help should work from any directory and must never perform a command action.
+if [[ "${1:-}" == "help" ]]; then
+    print_help "${2:-}"
+    exit 0
+fi
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help)
+            if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+                print_help
+            else
+                print_help "${1:-}"
+            fi
+            exit 0
+            ;;
+    esac
+done
+
 # Find the main repo (where .git is a directory, not a file)
 find_main_repo() {
     local dir="$PWD"
@@ -68,8 +129,8 @@ has_unpushed_commits() {
 # Remove a single worktree with safety checks
 # Returns the worktree path on success (for shell wrapper to detect)
 remove_worktree() {
-    local branch="$1"
-    local worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
+    local worktree_path="$1"
+    local display_name="${2:-$(basename "$worktree_path" | sed "s/^${REPO_NAME}-//")}"
 
     if [[ ! -d "$worktree_path" ]]; then
         echo "Worktree not found: $worktree_path" >&2
@@ -78,16 +139,19 @@ remove_worktree() {
 
     # Safety checks
     if has_uncommitted_changes "$worktree_path"; then
-        echo "ERROR: Worktree '$branch' has uncommitted changes" >&2
+        echo "ERROR: Worktree '$display_name' has uncommitted changes" >&2
         echo "  Commit or stash changes before removing" >&2
         return 1
     fi
 
     if has_unpushed_commits "$worktree_path"; then
-        echo "ERROR: Worktree '$branch' has unpushed commits" >&2
+        echo "ERROR: Worktree '$display_name' has unpushed commits" >&2
         echo "  Push changes before removing" >&2
         return 1
     fi
+
+    local actual_branch
+    actual_branch=$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$display_name")
 
     # Remove symlinks first (git worktree remove doesn't like symlinks)
     rm -f "$worktree_path/.claude"
@@ -100,7 +164,7 @@ remove_worktree() {
 
     git -C "$MAIN_REPO" worktree remove "$worktree_path"
     echo "Removed worktree: $worktree_path"
-    echo "Branch '$branch' preserved"
+    echo "Branch '$actual_branch' preserved"
     # Signal to shell wrapper which worktree was removed
     echo "__WT_REMOVED__:$worktree_path"
 }
@@ -108,8 +172,8 @@ remove_worktree() {
 # Force-remove a single worktree (warns and prompts for confirmation)
 # All user-facing output goes to /dev/tty since the shell wrapper captures stdout+stderr
 force_remove_worktree() {
-    local branch="$1"
-    local worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
+    local worktree_path="$1"
+    local display_name="${2:-$(basename "$worktree_path" | sed "s/^${REPO_NAME}-//")}"
 
     if [[ ! -d "$worktree_path" ]]; then
         echo "Worktree not found: $worktree_path" >/dev/tty
@@ -127,17 +191,20 @@ force_remove_worktree() {
     fi
 
     if [[ -n "$warnings" ]]; then
-        echo "WARNING: Worktree '$branch' has $warnings" >/dev/tty
+        echo "WARNING: Worktree '$display_name' has $warnings" >/dev/tty
     fi
 
     # Prompt for confirmation (read from /dev/tty for --all mode where stdin is consumed)
     local confirm
-    echo -n "Remove worktree '$branch'? [y/N] " >/dev/tty
+    echo -n "Remove worktree '$display_name'? [y/N] " >/dev/tty
     read -r confirm </dev/tty
     if [[ "$confirm" != [yY] ]]; then
-        echo "Skipped $branch" >/dev/tty
+        echo "Skipped $display_name" >/dev/tty
         return 1
     fi
+
+    local actual_branch
+    actual_branch=$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$display_name")
 
     # Remove symlinks first (git worktree remove doesn't like symlinks)
     rm -f "$worktree_path/.claude"
@@ -150,7 +217,7 @@ force_remove_worktree() {
 
     git -C "$MAIN_REPO" worktree remove --force "$worktree_path"
     echo "Removed worktree: $worktree_path"
-    echo "Branch '$branch' preserved"
+    echo "Branch '$actual_branch' preserved"
     echo "__WT_REMOVED__:$worktree_path"
 }
 
@@ -159,7 +226,7 @@ case "${1:-}" in
         shift
         no_cd=false
         branch=""
-        base="main"
+        base=""
 
         # Parse arguments
         while [[ $# -gt 0 ]]; do
@@ -184,6 +251,13 @@ case "${1:-}" in
             exit 1
         fi
 
+        if [[ -z "$base" ]]; then
+            base="HEAD"
+            base_display=$(git -C "$PWD" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$PWD" rev-parse --short HEAD)
+        else
+            base_display="$base"
+        fi
+
         worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
 
         # Check if branch already exists
@@ -191,8 +265,8 @@ case "${1:-}" in
             echo "Branch '$branch' exists, creating worktree for it..."
             git -C "$MAIN_REPO" worktree add "$worktree_path" "$branch"
         else
-            echo "Creating new branch '$branch' from '$base'..."
-            git -C "$MAIN_REPO" worktree add -b "$branch" "$worktree_path" "$base"
+            echo "Creating new branch '$branch' from '$base_display'..."
+            git -C "$PWD" worktree add -b "$branch" "$worktree_path" "$base"
         fi
 
         # Symlink .claude directory for settings
@@ -235,6 +309,18 @@ case "${1:-}" in
             wt_path=$(echo "$line" | awk '{print $1}')
             branch=$(echo "$line" | awk '{print $3}' | tr -d '[]')
 
+            # Determine display name (show mismatch if branch differs from folder)
+            if [[ "$wt_path" == "$MAIN_REPO" ]]; then
+                display="[$branch]"
+            else
+                folder_name=$(basename "$wt_path" | sed "s/^${REPO_NAME}-//")
+                if [[ "$folder_name" != "$branch" ]]; then
+                    display="[$folder_name → $branch]"
+                else
+                    display="[$folder_name]"
+                fi
+            fi
+
             # Determine status
             status=""
             if [[ -d "$wt_path" ]]; then
@@ -249,13 +335,17 @@ case "${1:-}" in
                 fi
             fi
 
-            printf "%-50s %s %s\n" "$wt_path" "[$branch]" "$status"
+            printf "%-50s %-30s %s\n" "$wt_path" "$display" "$status"
         done < <(git -C "$MAIN_REPO" worktree list)
         ;;
 
     # List branch names only (for completion)
     __branches)
-        git -C "$MAIN_REPO" worktree list | awk '{print $3}' | tr -d '[]' | grep -v "^$"
+        git -C "$MAIN_REPO" worktree list | while IFS= read -r line; do
+            wt_path=$(echo "$line" | awk '{print $1}')
+            [[ "$wt_path" == "$MAIN_REPO" ]] && continue
+            basename "$wt_path" | sed "s/^${REPO_NAME}-//"
+        done
         ;;
 
     # Return main repo path (for shell wrapper)
@@ -289,23 +379,22 @@ case "${1:-}" in
                 # Skip main repo
                 [[ "$wt_path" == "$MAIN_REPO" ]] && continue
 
-                # Extract branch name from path
-                branch=$(basename "$wt_path" | sed "s/^${REPO_NAME}-//")
+                display_name=$(basename "$wt_path" | sed "s/^${REPO_NAME}-//")
 
                 echo ""
-                echo "--- $branch ---"
+                echo "--- $display_name ---"
                 if [[ "$force" == "true" ]]; then
-                    if force_remove_worktree "$branch"; then
+                    if force_remove_worktree "$wt_path" "$display_name"; then
                         ((success++))
                     else
                         ((failed++))
                     fi
                 else
-                    if remove_worktree "$branch"; then
+                    if remove_worktree "$wt_path" "$display_name"; then
                         ((success++))
                     else
                         ((failed++))
-                        echo "Skipping $branch"
+                        echo "Skipping $display_name"
                     fi
                 fi
             done < <(git -C "$MAIN_REPO" worktree list)
@@ -316,20 +405,20 @@ case "${1:-}" in
             echo "__WT_MAIN__:$MAIN_REPO"
         else
             if [[ -z "$branch" ]]; then
-                # No branch specified - try to use current worktree
-                if [[ -f "$PWD/.git" ]]; then
-                    # We're in a worktree, get current branch
-                    branch=$(git rev-parse --abbrev-ref HEAD)
-                else
-                    echo "Usage: wt done [branch-name] [--force] | wt done --all [--force]" >&2
+                # No name specified - use current worktree path
+                worktree_path=$(git rev-parse --show-toplevel 2>/dev/null)
+                if [[ -z "$worktree_path" ]] || [[ "$worktree_path" == "$MAIN_REPO" ]]; then
+                    echo "Usage: wt done [name] [--force] | wt done --all [--force]" >&2
                     echo "  (run without args from within a worktree)" >&2
                     exit 1
                 fi
+            else
+                worktree_path="$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
             fi
             if [[ "$force" == "true" ]]; then
-                force_remove_worktree "$branch"
+                force_remove_worktree "$worktree_path"
             else
-                remove_worktree "$branch"
+                remove_worktree "$worktree_path"
             fi
             # Signal main repo for cd
             echo "__WT_MAIN__:$MAIN_REPO"
@@ -337,18 +426,14 @@ case "${1:-}" in
         ;;
 
     cd|path)
-        branch="${2:?Usage: wt cd <branch-name>}"
-        echo "$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$branch")"
+        if [[ -z "${2:-}" ]]; then
+            echo "$MAIN_REPO"
+        else
+            echo "$(dirname "$MAIN_REPO")/${REPO_NAME}-$(sanitize_branch "$2")"
+        fi
         ;;
 
     *)
-        echo "Usage: wt <command> [args]"
-        echo ""
-        echo "Commands:"
-        echo "  new <branch> [base] [--no-cd]  Create worktree and cd into it"
-        echo "  ls                             List all worktrees with status"
-        echo "  done [branch] [--force]        Remove worktree (default: current worktree)"
-        echo "  done --all [--force]           Remove all worktrees (skips unsafe ones)"
-        echo "  cd <branch>                    Change to worktree directory"
+        print_help
         ;;
 esac

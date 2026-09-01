@@ -4,7 +4,17 @@
 # Shell function wrapper for wt
 # Handles cd operations that can't be done from the script itself
 wt() {
-    if [[ "$1" == "cd" ]]; then
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help)
+                command wt "$@"
+                return $?
+                ;;
+        esac
+    done
+
+    if [[ "${1:-}" == "cd" ]]; then
         local target
         target=$(command wt path "${@:2}")
         if [[ -d "$target" ]]; then
